@@ -1,6 +1,10 @@
 ﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Smart.NET.Utils;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace Smart.NET.NeuralNetwork
@@ -11,6 +15,45 @@ namespace Smart.NET.NeuralNetwork
 
         public NeuralNetwork()
         {
+        }
+
+        public static NeuralNetwork Load(String filename)
+        {
+            var nn = new NeuralNetwork();
+            using (var br = new BinaryReader(File.Open(filename, FileMode.Open, FileAccess.Read, FileShare.None)))
+            {
+                Assert.AreEqual(1, br.ReadInt16()); // File format version
+                var layers = new Layer[br.ReadInt32()];
+                layers[0] = new Layer(nn, br.ReadInt32());
+                for (var layerIndex = 1; layerIndex < layers.Length; layerIndex++)
+                {
+                    var nodeCount = br.ReadInt32();
+                    Action<Layer> activationFunction;
+                    switch (br.ReadInt32())
+                    {
+                        case 0:
+                            activationFunction = SoftmaxLayerActivator.Activate;
+                            break;
+                        case 1:
+                            activationFunction = TanhLayerActivator.Activate;
+                            break;
+                        default:
+                            throw new InvalidDataException("Unknown activation function");
+                    }
+                    var layer = new Layer(nn, nodeCount, activationFunction, layers[layerIndex - 1]);
+                    layer.Biases = new Double[br.ReadInt32()];
+                    Assert.AreEqual(nodeCount, layer.Biases.Length);
+                    for (var i = 0; i < layer.Biases.Length; i++)
+                        layer.Biases[i] = br.ReadDouble();
+                    layer.PreviousToLayerWeights = new Double[br.ReadInt32()];
+                    Assert.AreEqual(nodeCount * layers[layerIndex - 1].NodeCount, layer.PreviousToLayerWeights.Length);
+                    for (var i = 0; i < layer.PreviousToLayerWeights.Length; i++)
+                        layer.PreviousToLayerWeights[i] = br.ReadDouble();
+                    layers[layerIndex] = layer;
+                }
+                nn.Layers = layers;
+            }
+            return nn;
         }
 
         public void ComputeForwardOutput()
@@ -33,6 +76,73 @@ namespace Smart.NET.NeuralNetwork
                 }
                 forwardLayer.Values[forwardIndex] = value;
             });
+        }
+
+        public void ValidateWithConfusionMatrix(List<Tuple<Double[], Double[]>> testData)
+        {
+            // Compute the confusion matrix
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+            var iLayer = Layers[0];
+            var oLayer = Layers[Layers.Length - 1];
+            var dCount = oLayer.NodeCount;
+            var confusionMatrix = new Int32[dCount, dCount];
+            foreach (var tuple in testData)
+            {
+                iLayer.Values = tuple.Item1;
+                ComputeForwardOutput();
+
+                var dValues = tuple.Item2;
+
+                var actual = oLayer.Values.Select((v, i) => new { Value = v, Index = i }).OrderByDescending(v => v.Value).First().Index;
+                var expected = tuple.Item2.Select((v, i) => new { Value = v, Index = i }).First(v => v.Value == 1d).Index;
+
+                confusionMatrix[expected, actual]++;
+            }
+            stopwatch.Stop();
+
+            // Render the matrix
+            Console.WriteLine("Total ms: {0}", stopwatch.ElapsedMilliseconds);
+            Console.Write("\t");
+            for (var i = 0; i < dCount; i++)
+            {
+                Console.Write("{0}\t", i);
+            }
+            Console.WriteLine("Recall");
+            for (var i = 0; i < dCount; i++)
+            {
+                Console.Write("{0}\t", i);
+                var correct = 0;
+                var total = 0;
+                for (var j = 0; j < dCount; j++)
+                {
+                    if (j == i)
+                        correct += confusionMatrix[i, j];
+                    total += confusionMatrix[i, j];
+                    Console.Write("{0}\t", confusionMatrix[i, j]);
+                }
+                var recall = (Double)correct / (Double)total;
+                Console.WriteLine(recall.ToString("F3"));
+            }
+            var precision = new Double[dCount];
+            for (var i = 0; i < dCount; i++)
+            {
+                var correct = 0;
+                var total = 0;
+                for (var j = 0; j < dCount; j++)
+                {
+                    if (j == i)
+                        correct += confusionMatrix[j, i];
+                    total += confusionMatrix[j, i];
+                }
+                precision[i] = (Double)correct / (Double)total;
+            }
+            Console.Write("Prec\t");
+            for (var i = 0; i < dCount; i++)
+            {
+                Console.Write(precision[i].ToString("F3") + "\t");
+            }
+            Console.WriteLine();
         }
     }
 }
